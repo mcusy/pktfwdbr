@@ -271,10 +271,10 @@ int main(int argc, char** argv) {
 	struct context cntx;
 	cntx.txaddrs = g_hash_table_new(g_str_hash, g_str_equal);
 
-	gchar* mqtthost;
-	gint mqttport;
-	gint listenport;
-	gchar** configs;
+	gchar* mqtthost = "localhost";
+	gint mqttport = 1883;
+	gint listenport = 1912;
+	gchar** configs = NULL;
 	GOptionEntry entries[] = { //
 			{ "mqtthost", 'h', 0, G_OPTION_ARG_STRING, &mqtthost, "", "" }, //
 					{ "mqttport", 'p', 0, G_OPTION_ARG_INT, &mqttport, "", "" }, //
@@ -305,10 +305,12 @@ int main(int argc, char** argv) {
 	GInetAddress* loinetaddr = g_inet_address_new_loopback(
 			G_SOCKET_FAMILY_IPV4);
 
-	JsonParser* jsonparser = json_parser_new_immutable();
-	for (gchar** c = configs; *c != NULL; c++)
-		parseconfig(jsonparser, loinetaddr, &cntx, *c);
-	g_object_unref(jsonparser);
+	if (configs != NULL) {
+		JsonParser* jsonparser = json_parser_new_immutable();
+		for (gchar** c = configs; *c != NULL; c++)
+			parseconfig(jsonparser, loinetaddr, &cntx, *c);
+		g_object_unref(jsonparser);
+	}
 
 	cntx.sock = g_socket_new(G_SOCKET_FAMILY_IPV4, G_SOCKET_TYPE_DATAGRAM,
 			G_SOCKET_PROTOCOL_DEFAULT, NULL);
@@ -317,6 +319,7 @@ int main(int argc, char** argv) {
 		goto out;
 	}
 
+	g_message("listening on port %d", listenport);
 	GSocketAddress* rxaddr = g_inet_socket_address_new(loinetaddr, listenport);
 	if (rxaddr == NULL) {
 		ret = ERR_RXADDR;
