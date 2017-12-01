@@ -32,6 +32,10 @@ struct context {
 	GSocket* sock;
 	GHashTable* txaddrs;
 	struct mosquitto* mosq;
+	const gchar* mqtthost;
+	gint mqttport;
+	GIOChannel* mosqchan;
+	guint mosqsource;
 };
 
 struct publishcontext {
@@ -201,9 +205,38 @@ static gboolean handlemosq(GIOChannel *source, GIOCondition condition,
 }
 
 static gboolean mosq_idle(gpointer data) {
-	struct mosquitto* mosq = (struct mosquitto*) data;
-	mosquitto_loop_write(mosq, 1);
-	mosquitto_loop_misc(mosq);
+
+	struct context* cntx = (struct context*) data;
+
+	bool connected = false;
+
+	// This seems like the only way to work out if
+	// we ever connected or got disconnected at
+	// some point
+	if (mosquitto_loop_misc(cntx->mosq) == MOSQ_ERR_NO_CONN) {
+		if (cntx->mosqchan != NULL) {
+			g_source_remove(cntx->mosqsource);
+			// g_io_channel_shutdown doesn't work :/
+			close(mosquitto_socket(cntx->mosq));
+			cntx->mosqchan = NULL;
+		}
+
+		if (mosquitto_connect(cntx->mosq, cntx->mqtthost, cntx->mqttport, 60)
+				== MOSQ_ERR_SUCCESS) {
+			int mosqfd = mosquitto_socket(cntx->mosq);
+			cntx->mosqchan = g_io_channel_unix_new(mosqfd);
+			cntx->mosqsource = g_io_add_watch(cntx->mosqchan, G_IO_IN,
+					handlemosq, cntx->mosq);
+			g_io_channel_unref(cntx->mosqchan);
+			connected = true;
+		}
+	} else
+		connected = true;
+
+	if (connected) {
+		mosquitto_loop_read(cntx->mosq, 1);
+		mosquitto_loop_write(cntx->mosq, 1);
+	}
 	return TRUE;
 }
 
@@ -268,7 +301,7 @@ int main(int argc, char** argv) {
 
 	int ret = 0;
 
-	struct context cntx;
+	struct context cntx = { 0 };
 	cntx.txaddrs = g_hash_table_new(g_str_hash, g_str_equal);
 
 	gchar* mqtthost = "localhost";
@@ -293,14 +326,11 @@ int main(int argc, char** argv) {
 	}
 
 	mosquitto_lib_init();
+	g_message("using mqtt broker at %s on port %d", mqtthost, mqttport);
+	cntx.mqtthost = mqtthost;
+	cntx.mqttport = mqttport;
 	cntx.mosq = mosquitto_new(NULL, true, NULL);
 	mosquitto_log_callback_set(cntx.mosq, mosq_log);
-	if (mosquitto_connect(cntx.mosq, mqtthost, mqttport, 60)
-			!= MOSQ_ERR_SUCCESS) {
-		g_message("Failed to connect to broker");
-		ret = ERR_MQTTCONNECT;
-		goto out;
-	}
 
 	GInetAddress* loinetaddr = g_inet_address_new_loopback(
 			G_SOCKET_FAMILY_IPV4);
@@ -319,7 +349,7 @@ int main(int argc, char** argv) {
 		goto out;
 	}
 
-	g_message("listening on port %d", listenport);
+	g_message("listening for packet forwarder packets on port %d", listenport);
 	GSocketAddress* rxaddr = g_inet_socket_address_new(loinetaddr, listenport);
 	if (rxaddr == NULL) {
 		ret = ERR_RXADDR;
@@ -331,11 +361,7 @@ int main(int argc, char** argv) {
 		goto out;
 	}
 
-	int mosqfd = mosquitto_socket(cntx.mosq);
-	GIOChannel* mosqchan = g_io_channel_unix_new(mosqfd);
-	g_io_add_watch(mosqchan, G_IO_IN, handlemosq, cntx.mosq);
-
-	g_timeout_add(500, mosq_idle, cntx.mosq);
+	g_timeout_add(500, mosq_idle, &cntx);
 
 	int rxfd = g_socket_get_fd(cntx.sock);
 	GIOChannel* rxchan = g_io_channel_unix_new(rxfd);
