@@ -279,6 +279,7 @@ static int parseconfig(JsonParser* jsonparser, GInetAddress* loinetaddr,
 				gint64 port = json_object_get_int_member(gatewayconf,
 				JSON_SERV_PORT_DOWN);
 				id = g_strdup(id); // we'll be keeping this and the original is lost when the json is free'd
+				g_ascii_tolower(id);
 
 				GSocketAddress* txaddr = g_inet_socket_address_new(loinetaddr,
 						port);
@@ -287,7 +288,7 @@ static int parseconfig(JsonParser* jsonparser, GInetAddress* loinetaddr,
 					goto out;
 				}
 				g_hash_table_insert(cntx->txaddrs, (gpointer) id, txaddr);
-				g_message("registered gateway %d", id);
+				g_message("registered gateway %s", id);
 			} else
 				g_message("%s doesn't contain all the required keys", c);
 		}
