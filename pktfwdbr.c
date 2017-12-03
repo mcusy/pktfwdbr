@@ -278,8 +278,13 @@ static int parseconfig(JsonParser* jsonparser, GInetAddress* loinetaddr,
 				JSON_GATEWAY_ID);
 				gint64 port = json_object_get_int_member(gatewayconf,
 				JSON_SERV_PORT_DOWN);
-				id = g_strdup(id); // we'll be keeping this and the original is lost when the json is free'd
-				g_ascii_tolower(id);
+
+				// we need our own copy of the id string,
+				// the packet forward also lower cases the
+				// id string from the config.
+				GString* gwid = g_string_new(id);
+				g_string_ascii_down(gwid);
+				id = g_string_free(gwid, false);
 
 				GSocketAddress* txaddr = g_inet_socket_address_new(loinetaddr,
 						port);
