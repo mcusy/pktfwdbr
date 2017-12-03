@@ -204,8 +204,16 @@ static gboolean handlemosq(GIOChannel *source, GIOCondition condition,
 	return TRUE;
 }
 
-static gboolean mosq_idle(gpointer data) {
+static void subforgw(gpointer key, gpointer value, gpointer user_data) {
+	struct context* cntx = (struct context*) user_data;
+	gchar* topic = createtopic(key, TOPIC_TX);
+	if (mosquitto_subscribe(cntx->mosq, NULL, topic, 0) != MOSQ_ERR_SUCCESS) {
+		g_message("Failed to subscribe to topic");
+	}
+	g_free(topic);
+}
 
+static gboolean mosq_idle(gpointer data) {
 	struct context* cntx = (struct context*) data;
 
 	bool connected = false;
@@ -228,6 +236,8 @@ static gboolean mosq_idle(gpointer data) {
 			cntx->mosqsource = g_io_add_watch(cntx->mosqchan, G_IO_IN,
 					handlemosq, cntx->mosq);
 			g_io_channel_unref(cntx->mosqchan);
+
+			g_hash_table_foreach(cntx->txaddrs, subforgw, cntx);
 			connected = true;
 		}
 	} else
@@ -255,8 +265,6 @@ static int parseconfig(JsonParser* jsonparser, GInetAddress* loinetaddr,
 		goto out;
 	}
 
-	gchar* topic = NULL;
-
 	JsonNode* root = json_parser_get_root(jsonparser);
 	if (JSON_NODE_HOLDS_OBJECT(root)) {
 		JsonObject* rootobj = json_node_get_object(root);
@@ -272,29 +280,20 @@ static int parseconfig(JsonParser* jsonparser, GInetAddress* loinetaddr,
 				JSON_SERV_PORT_DOWN);
 				id = g_strdup(id); // we'll be keeping this and the original is lost when the json is free'd
 
-				topic = createtopic(id, TOPIC_TX);
-				if (mosquitto_subscribe(cntx->mosq, NULL, topic, 0)
-						!= MOSQ_ERR_SUCCESS) {
-					g_message("Failed to subscribe to topic");
-					ret = ERR_MQTTSUB;
-					goto out;
-				}
-
 				GSocketAddress* txaddr = g_inet_socket_address_new(loinetaddr,
 						port);
 				if (txaddr == NULL) {
 					ret = ERR_RXADDR;
 					goto out;
 				}
-				g_hash_table_insert(cntx->txaddrs, id, txaddr);
+				g_hash_table_insert(cntx->txaddrs, (gpointer) id, txaddr);
+				g_message("registered gateway %d", id);
 			} else
-				g_message("%s doesn't contain all the require keys", c);
+				g_message("%s doesn't contain all the required keys", c);
 		}
 	}
 
-	out: if (topic != NULL)
-		g_free(topic);
-	return ret;
+	out: return ret;
 }
 
 int main(int argc, char** argv) {
