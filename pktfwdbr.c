@@ -32,6 +32,8 @@
 #define JSON_SERV_PORT_UP		"serv_port_up"
 #define JSON_SERV_PORT_DOWN		"serv_port_down"
 
+#define MTYPE_SHIFT 5
+#define MTYPE_MASK 0b111
 #define MTYPE_JOINREQ 0b000
 #define MTYPE_UNCONFUP 0b010
 #define MTYPE_CONFUP 0b100
@@ -79,7 +81,7 @@ static void handlerx_processrx(JsonArray *array, guint index,
 	const gchar* b64payload = json_object_get_string_member(obj, "data");
 	gsize payloadlen;
 	guchar* payload = g_base64_decode(b64payload, &payloadlen);
-	uint8_t mtype = *payload;
+	uint8_t mtype = (*payload >> MTYPE_SHIFT) & MTYPE_MASK;
 	g_free(payload);
 
 	gchar* subtopic;
