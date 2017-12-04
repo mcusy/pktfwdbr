@@ -111,7 +111,7 @@ static void handlerx_processrx(JsonArray *array, guint index,
 	mosquitto_publish(cntx->mosq, NULL, topic, publishpayloadsz, publishpayload, 0, false);
 
 	g_free(topic);
-	g_free(payload);
+	g_free(publishpayload);
 }
 
 static gchar* extractid(uint8_t* pktbuff) {
