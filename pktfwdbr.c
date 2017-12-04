@@ -18,6 +18,10 @@
 
 #define TOPIC_ROOT	"pktfwdbr"
 #define TOPIC_RX	"rx"
+#define TOPIC_RX_JOIN "join"
+#define TOPIC_RX_UNCONF "unconfirmed"
+#define TOPIC_RX_CONF "confirmed"
+#define TOPIC_RX_OTHER "other"
 #define TOPIC_TX	"tx"
 #define TOPIC_STAT	"stat"
 
@@ -27,6 +31,10 @@
 #define JSON_GATEWAY_ID			"gateway_ID"
 #define JSON_SERV_PORT_UP		"serv_port_up"
 #define JSON_SERV_PORT_DOWN		"serv_port_down"
+
+#define MTYPE_JOINREQ 0b000
+#define MTYPE_UNCONFUP 0b010
+#define MTYPE_CONFUP 0b100
 
 struct context {
 	GSocket* sock;
@@ -43,27 +51,66 @@ struct publishcontext {
 	struct mosquitto* mosq;
 };
 
-static gchar* createtopic(const gchar* id, const gchar* target) {
+static gchar* createtopic(const gchar* id, ...) {
 	GString* topicstr = g_string_new(TOPIC_ROOT"/");
 	g_string_append(topicstr, id);
-	g_string_append(topicstr, "/");
-	g_string_append(topicstr, target);
+
+	va_list args;
+	va_start(args, id);
+
+	const gchar* part = va_arg(args, const gchar*);
+	for (; part != NULL; part = va_arg(args, const gchar*)) {
+		g_string_append(topicstr, "/");
+		g_string_append(topicstr, part);
+	}
+
+	va_end(args);
 	gchar* topic = g_string_free(topicstr, FALSE);
 	return topic;
 }
 
 static void handlerx_processrx(JsonArray *array, guint index,
 		JsonNode *element_node, gpointer data) {
+
+	// Do a tiny bit of processing on the payload
+	// so we can split joins etc onto a different
+	// topic
+	JsonObject* obj = json_node_get_object(element_node);
+	const gchar* b64payload = json_object_get_string_member(obj, "data");
+	gsize payloadlen;
+	guchar* payload = g_base64_decode(b64payload, &payloadlen);
+	uint8_t mtype = *payload;
+	g_free(data);
+
+	gchar* subtopic;
+	switch (mtype) {
+	case MTYPE_JOINREQ:
+		subtopic = TOPIC_RX_JOIN;
+		break;
+	case MTYPE_UNCONFUP:
+		subtopic = TOPIC_RX_UNCONF;
+		break;
+	case MTYPE_CONFUP:
+		subtopic = TOPIC_RX_CONF;
+		break;
+	default:
+		subtopic = TOPIC_RX_OTHER;
+		break;
+	}
+
 	struct publishcontext* cntx = (struct publishcontext*) data;
-	gchar* topic = createtopic(cntx->id, TOPIC_RX);
+	gchar* topic = createtopic(cntx->id, TOPIC_RX, subtopic, NULL);
 
 	JsonGenerator* jsongenerator = json_generator_new();
 	json_generator_set_root(jsongenerator, element_node);
-	gsize payloadsz;
-	gchar* payload = json_generator_to_data(jsongenerator, &payloadsz);
+	gsize publishpayloadsz;
+	gchar* publishpayload = json_generator_to_data(jsongenerator,
+			&publishpayloadsz);
 	g_object_unref(jsongenerator);
 
-	mosquitto_publish(cntx->mosq, NULL, topic, payloadsz, payload, 0, false);
+	mosquitto_publish(cntx->mosq, NULL, topic, publishpayloadsz, publishpayload,
+			0,
+			false);
 
 	g_free(topic);
 	g_free(payload);
@@ -206,7 +253,7 @@ static gboolean handlemosq(GIOChannel *source, GIOCondition condition,
 
 static void subforgw(gpointer key, gpointer value, gpointer user_data) {
 	struct context* cntx = (struct context*) user_data;
-	gchar* topic = createtopic(key, TOPIC_TX);
+	gchar* topic = createtopic(key, TOPIC_TX, NULL);
 	if (mosquitto_subscribe(cntx->mosq, NULL, topic, 0) != MOSQ_ERR_SUCCESS) {
 		g_message("Failed to subscribe to topic");
 	}
@@ -218,9 +265,9 @@ static gboolean mosq_idle(gpointer data) {
 
 	bool connected = false;
 
-	// This seems like the only way to work out if
-	// we ever connected or got disconnected at
-	// some point
+// This seems like the only way to work out if
+// we ever connected or got disconnected at
+// some point
 	if (mosquitto_loop_misc(cntx->mosq) == MOSQ_ERR_NO_CONN) {
 		if (cntx->mosqchan != NULL) {
 			g_source_remove(cntx->mosqsource);
