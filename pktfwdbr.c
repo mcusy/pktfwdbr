@@ -80,7 +80,7 @@ static void handlerx_processrx(JsonArray *array, guint index,
 	gsize payloadlen;
 	guchar* payload = g_base64_decode(b64payload, &payloadlen);
 	uint8_t mtype = *payload;
-	g_free(data);
+	g_free(payload);
 
 	gchar* subtopic;
 	switch (mtype) {
@@ -108,9 +108,7 @@ static void handlerx_processrx(JsonArray *array, guint index,
 			&publishpayloadsz);
 	g_object_unref(jsongenerator);
 
-	mosquitto_publish(cntx->mosq, NULL, topic, publishpayloadsz, publishpayload,
-			0,
-			false);
+	mosquitto_publish(cntx->mosq, NULL, topic, publishpayloadsz, publishpayload, 0, false);
 
 	g_free(topic);
 	g_free(payload);
@@ -140,8 +138,7 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 	if (pktbuff == NULL)
 		goto out;
 
-	gssize pktsz = g_socket_receive(cntx->sock, pktbuff, pktbuffsz, NULL,
-	NULL);
+	gssize pktsz = g_socket_receive(cntx->sock, pktbuff, pktbuffsz, NULL, NULL);
 	if (pktsz == 0 || pktsz < sizeof(struct pkt_hdr)) {
 		g_message("invalid packet size; %d", (int) pktsz);
 		goto out;
@@ -167,9 +164,7 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 				PKT_TYPE_PUSH_ACK };
 
 		if (g_socket_send_to(cntx->sock, txaddr, (const gchar*) &ack,
-				sizeof(ack),
-				NULL,
-				NULL) < 0)
+				sizeof(ack), NULL, NULL) < 0)
 			g_message("failed to ack push data");
 
 		gssize jsonsz = PKT_JSONSZ(pktsz);
@@ -220,9 +215,7 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 				.type =
 				PKT_TYPE_PULL_ACK };
 		if (g_socket_send_to(cntx->sock, txaddr, (const gchar*) &ack,
-				sizeof(ack),
-				NULL,
-				NULL) < 0)
+				sizeof(ack), NULL, NULL) < 0)
 			g_message("failed to ack pull data");
 	}
 		break;
