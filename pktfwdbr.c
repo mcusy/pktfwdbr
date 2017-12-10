@@ -71,6 +71,16 @@ static gchar* createtopic(const gchar* id, ...) {
 	return topic;
 }
 
+static gchar* extracteui(guchar* buffer){
+	GString* tmp = g_string_new(NULL);
+	for(int i = 7; i >= 0; i--){
+		unsigned b = buffer[i];
+		g_string_append_printf(tmp, "%02x", b);
+		buffer[i];
+	}
+	return g_string_free(tmp, FALSE);
+}
+
 static void handlerx_processrx(JsonArray *array, guint index,
 		JsonNode *element_node, gpointer data) {
 
@@ -82,12 +92,20 @@ static void handlerx_processrx(JsonArray *array, guint index,
 	gsize payloadlen;
 	guchar* payload = g_base64_decode(b64payload, &payloadlen);
 	uint8_t mtype = (*payload >> MTYPE_SHIFT) & MTYPE_MASK;
-	g_free(payload);
 
 	gchar* subtopic;
+	gchar* subsubtopic = NULL;
+	gchar* subsubsubtopic = NULL;
+
 	switch (mtype) {
-	case MTYPE_JOINREQ:
+	case MTYPE_JOINREQ: {
 		subtopic = TOPIC_RX_JOIN;
+		guchar* joinpayload = payload + 1;
+		guchar* appeui = joinpayload;
+		guchar* deveui = appeui + 8;
+		subsubtopic = extracteui(appeui);
+		subsubsubtopic = extracteui(deveui);
+	}
 		break;
 	case MTYPE_UNCONFUP:
 		subtopic = TOPIC_RX_UNCONF;
@@ -100,8 +118,15 @@ static void handlerx_processrx(JsonArray *array, guint index,
 		break;
 	}
 
+	g_free(payload);
+
 	struct publishcontext* cntx = (struct publishcontext*) data;
-	gchar* topic = createtopic(cntx->id, TOPIC_RX, subtopic, NULL);
+	gchar* topic = createtopic(cntx->id, TOPIC_RX, subtopic, subsubtopic, subsubsubtopic, NULL);
+
+	if(subsubtopic != NULL)
+		g_free(subsubtopic);
+	if(subsubsubtopic != NULL)
+		g_free(subsubsubtopic);
 
 	JsonGenerator* jsongenerator = json_generator_new();
 	json_generator_set_root(jsongenerator, element_node);
