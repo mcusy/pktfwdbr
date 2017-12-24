@@ -56,7 +56,8 @@ struct publishcontext {
 
 struct forwarder {
 	const gchar* id;
-	GSocketAddress* addr;
+	GSocketAddress* upstream;
+	GSocketAddress* downsteam;
 	guint64 lastseen;
 	guint16 token;
 };
@@ -175,7 +176,7 @@ static void subforgw(struct context* cntx, const gchar* id) {
 }
 
 static void touchforwarder(struct context* cntx, const gchar* id,
-		GSocketAddress* addr) {
+		GSocketAddress* addr, gboolean downstream) {
 	struct forwarder* forwarder = g_hash_table_lookup(cntx->forwarders, id);
 	if (forwarder == NULL) {
 		forwarder = g_malloc(sizeof(*forwarder));
@@ -184,7 +185,11 @@ static void touchforwarder(struct context* cntx, const gchar* id,
 		subforgw(cntx, id);
 
 	}
-	forwarder->addr = addr;
+
+	if (downstream)
+		forwarder->downsteam = addr;
+	else
+		forwarder->upstream = addr;
 	forwarder->lastseen = g_get_monotonic_time();
 
 }
@@ -213,13 +218,16 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 	}
 
 	gchar* idstr = extractid(pktbuff);
-	touchforwarder(cntx, idstr, theiraddr);
 
 	struct pkt_hdr* p = ((struct pkt_hdr*) pktbuff);
 	if (!PKT_VALIDHEADER(p)) {
 		g_message("invalid packet header");
 		goto out;
 	}
+
+	gboolean downstream = (p->type == PKT_TYPE_PULL_DATA
+			|| p->type == PKT_TYPE_TX_ACK);
+	touchforwarder(cntx, idstr, theiraddr, downstream);
 
 	switch (p->type) {
 	case PKT_TYPE_PUSH_DATA: {
@@ -376,6 +384,9 @@ static void mosq_msg(struct mosquitto *mosq, void *obj,
 	struct forwarder* forwarder = findforwarder(cntx, gatewayid);
 	if (forwarder == NULL)
 		return;
+	if (forwarder->downsteam == NULL) {
+		g_message("don't know downstream address yet");
+	}
 
 	uint16_t token = forwarder->token++;
 
@@ -388,8 +399,8 @@ static void mosq_msg(struct mosquitto *mosq, void *obj,
 	memcpy(pkt, &hdr, sizeof(hdr));
 	memcpy(pkt + sizeof(hdr), message->payload, message->payloadlen);
 
-	if (g_socket_send_to(cntx->sock, forwarder->addr, (const gchar*) pkt, pktsz,
-	NULL, NULL) < 0)
+	if (g_socket_send_to(cntx->sock, forwarder->downsteam, (const gchar*) pkt,
+			pktsz, NULL, NULL) < 0)
 		g_message("failed to send pull resp");
 
 }
