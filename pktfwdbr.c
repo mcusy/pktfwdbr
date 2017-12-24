@@ -41,7 +41,7 @@
 
 struct context {
 	GSocket* sock;
-	GHashTable* txaddrs;
+	GHashTable* forwarders;
 	struct mosquitto* mosq;
 	const gchar* mqtthost;
 	gint mqttport;
@@ -52,6 +52,11 @@ struct context {
 struct publishcontext {
 	gchar* id;
 	struct mosquitto* mosq;
+};
+
+struct forwarder {
+	const gchar* id;
+	GSocketAddress* addr;
 };
 
 static gchar* createtopic(const gchar* id, ...) {
@@ -152,15 +157,33 @@ static gchar* extractid(uint8_t* pktbuff) {
 	return g_string_free(str, FALSE);
 }
 
-static GSocketAddress* findport(struct context* cntx, const gchar* id) {
-	GSocketAddress* txaddr = g_hash_table_lookup(cntx->txaddrs, id);
-	if (txaddr == NULL)
-		g_message("don't have a port for %s", id);
-	return txaddr;
+static struct forwarder* findforwarder(struct context* cntx, const gchar* id) {
+	struct forwarder* forwarder = g_hash_table_lookup(cntx->forwarders, id);
+	if (forwarder == NULL)
+		g_message("don't know about forwarder %s", id);
+	return forwarder;
 }
 
-static void putport(struct context* cntx, const gchar* id, GSocketAddress* addr) {
-	g_hash_table_insert(cntx->txaddrs, (gpointer) id, addr);
+static void subforgw(struct context* cntx, const gchar* id) {
+	gchar* topic = createtopic(id, TOPIC_TX, NULL);
+	if (mosquitto_subscribe(cntx->mosq, NULL, topic, 0) != MOSQ_ERR_SUCCESS) {
+		g_message("Failed to subscribe to topic");
+	}
+	g_free(topic);
+}
+
+static void touchforwarder(struct context* cntx, const gchar* id,
+		GSocketAddress* addr) {
+	struct forwarder* forwarder = g_hash_table_lookup(cntx->forwarders, id);
+	if (forwarder == NULL) {
+		forwarder = g_malloc(sizeof(*forwarder));
+		forwarder->id = id;
+		g_hash_table_insert(cntx->forwarders, (gpointer) id, addr);
+		subforgw(cntx, id);
+
+	}
+	forwarder->addr = addr;
+
 }
 
 static gboolean handlerx(GIOChannel *source, GIOCondition condition,
@@ -187,7 +210,7 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 	}
 
 	gchar* idstr = extractid(pktbuff);
-	putport(cntx, idstr, theiraddr);
+	touchforwarder(cntx, idstr, theiraddr);
 
 	struct pkt_hdr* p = ((struct pkt_hdr*) pktbuff);
 	if (!PKT_VALIDHEADER(p)) {
@@ -277,15 +300,6 @@ static gboolean handlemosq(GIOChannel *source, GIOCondition condition,
 	return TRUE;
 }
 
-static void subforgw(gpointer key, gpointer value, gpointer user_data) {
-	struct context* cntx = (struct context*) user_data;
-	gchar* topic = createtopic(key, TOPIC_TX, NULL);
-	if (mosquitto_subscribe(cntx->mosq, NULL, topic, 0) != MOSQ_ERR_SUCCESS) {
-		g_message("Failed to subscribe to topic");
-	}
-	g_free(topic);
-}
-
 static gboolean mosq_idle(gpointer data) {
 	struct context* cntx = (struct context*) data;
 
@@ -309,8 +323,6 @@ static gboolean mosq_idle(gpointer data) {
 			cntx->mosqsource = g_io_add_watch(cntx->mosqchan, G_IO_IN,
 					handlemosq, cntx->mosq);
 			g_io_channel_unref(cntx->mosqchan);
-
-			g_hash_table_foreach(cntx->txaddrs, subforgw, cntx);
 			connected = true;
 		}
 	} else
@@ -337,6 +349,11 @@ static void mosq_msg(struct mosquitto *mosq, void *obj,
 	int topicparts;
 	mosquitto_sub_topic_tokenise(message->topic, &splittopic, &topicparts);
 
+	if (topicparts < 3) {
+		g_message("not enough topic parts");
+		return;
+	}
+
 	char* root = splittopic[0];
 	char* gatewayid = splittopic[1];
 	char* direction = splittopic[2];
@@ -353,8 +370,8 @@ static void mosq_msg(struct mosquitto *mosq, void *obj,
 
 	g_message("have tx packet");
 
-	GSocketAddress* txaddr = findport(cntx, gatewayid);
-	if (txaddr == NULL)
+	struct forwarder* forwarder = findforwarder(cntx, gatewayid);
+	if (forwarder == NULL)
 		return;
 
 	uint16_t token = 0;
@@ -368,7 +385,7 @@ static void mosq_msg(struct mosquitto *mosq, void *obj,
 	memcpy(pkt, &hdr, sizeof(hdr));
 	memcpy(pkt + sizeof(hdr), message->payload, message->payloadlen);
 
-	if (g_socket_send_to(cntx->sock, txaddr, (const gchar*) pkt, pktsz,
+	if (g_socket_send_to(cntx->sock, forwarder->addr, (const gchar*) pkt, pktsz,
 	NULL, NULL) < 0)
 		g_message("failed to send pull resp");
 
@@ -379,7 +396,7 @@ int main(int argc, char** argv) {
 	int ret = 0;
 
 	struct context cntx = { 0 };
-	cntx.txaddrs = g_hash_table_new(g_str_hash, g_str_equal);
+	cntx.forwarders = g_hash_table_new(g_str_hash, g_str_equal);
 
 	gchar* mqtthost = "localhost";
 	gint mqttport = 1883;
