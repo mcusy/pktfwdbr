@@ -159,12 +159,15 @@ static GSocketAddress* findport(struct context* cntx, const gchar* id) {
 	return txaddr;
 }
 
+static void putport(struct context* cntx, const gchar* id, GSocketAddress* addr) {
+	g_hash_table_insert(cntx->txaddrs, (gpointer) id, addr);
+}
+
 static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 		gpointer data) {
 
 	struct context* cntx = (struct context*) data;
 
-	gchar* idstr = NULL;
 	JsonParser* jsonparser = NULL;
 
 	g_message("UDP incoming");
@@ -175,11 +178,16 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 	if (pktbuff == NULL)
 		goto out;
 
-	gssize pktsz = g_socket_receive(cntx->sock, pktbuff, pktbuffsz, NULL, NULL);
+	GSocketAddress* theiraddr;
+	gssize pktsz = g_socket_receive_from(cntx->sock, &theiraddr, pktbuff,
+			pktbuffsz, NULL, NULL);
 	if (pktsz == 0 || pktsz < sizeof(struct pkt_hdr)) {
 		g_message("invalid packet size; %d", (int) pktsz);
 		goto out;
 	}
+
+	gchar* idstr = extractid(pktbuff);
+	putport(cntx, idstr, theiraddr);
 
 	struct pkt_hdr* p = ((struct pkt_hdr*) pktbuff);
 	if (!PKT_VALIDHEADER(p)) {
@@ -189,16 +197,11 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 
 	switch (p->type) {
 	case PKT_TYPE_PUSH_DATA: {
-		idstr = extractid(pktbuff);
-		GSocketAddress* txaddr = findport(cntx, idstr);
-		if (txaddr == NULL)
-			goto out;
-
 		struct pkt_hdr ack = { .version = PKT_VERSION, .token = p->token,
 				.type =
 				PKT_TYPE_PUSH_ACK };
 
-		if (g_socket_send_to(cntx->sock, txaddr, (const gchar*) &ack,
+		if (g_socket_send_to(cntx->sock, theiraddr, (const gchar*) &ack,
 				sizeof(ack), NULL, NULL) < 0)
 			g_message("failed to ack push data");
 
@@ -239,24 +242,15 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 	}
 		break;
 	case PKT_TYPE_PULL_DATA: {
-		idstr = extractid(pktbuff);
-		GSocketAddress* txaddr = findport(cntx, idstr);
-		if (txaddr == NULL)
-			goto out;
-
 		struct pkt_hdr ack = { .version = PKT_VERSION, .token = p->token,
 				.type =
 				PKT_TYPE_PULL_ACK };
-		if (g_socket_send_to(cntx->sock, txaddr, (const gchar*) &ack,
+		if (g_socket_send_to(cntx->sock, theiraddr, (const gchar*) &ack,
 				sizeof(ack), NULL, NULL) < 0)
 			g_message("failed to ack pull data");
 	}
 		break;
 	case PKT_TYPE_TX_ACK: {
-		idstr = extractid(pktbuff);
-		GSocketAddress* txaddr = findport(cntx, idstr);
-		if (txaddr == NULL)
-			goto out;
 		uint8_t* json = PKT_JSON(pktbuff);
 
 		g_message("got tx ack");
@@ -334,55 +328,6 @@ static void mosq_log(struct mosquitto* mosq, void* userdata, int level,
 	g_message(str);
 }
 
-static int parseconfig(JsonParser* jsonparser, GInetAddress* loinetaddr,
-		struct context* cntx, const gchar* c) {
-
-	int ret = 0;
-
-	if (!json_parser_load_from_file(jsonparser, c, NULL)) {
-		g_message("failed to parse json from %s", c);
-		goto out;
-	}
-
-	JsonNode* root = json_parser_get_root(jsonparser);
-	if (JSON_NODE_HOLDS_OBJECT(root)) {
-		JsonObject* rootobj = json_node_get_object(root);
-		if (json_object_has_member(rootobj, JSON_GATEWAY_CONF)) {
-			JsonObject* gatewayconf = json_object_get_object_member(rootobj,
-			JSON_GATEWAY_CONF);
-			if (json_object_has_member(gatewayconf, JSON_GATEWAY_ID)
-					&& json_object_has_member(gatewayconf,
-					JSON_SERV_PORT_DOWN)) {
-				const gchar* id = json_object_get_string_member(gatewayconf,
-				JSON_GATEWAY_ID);
-				gint64 port = json_object_get_int_member(gatewayconf,
-				JSON_SERV_PORT_DOWN);
-
-				g_message("downstream port for %s is %d", id, (int) port);
-
-				// we need our own copy of the id string,
-				// the packet forward also lower cases the
-				// id string from the config.
-				GString* gwid = g_string_new(id);
-				g_string_ascii_down(gwid);
-				id = g_string_free(gwid, false);
-
-				GSocketAddress* txaddr = g_inet_socket_address_new(loinetaddr,
-						port);
-				if (txaddr == NULL) {
-					ret = ERR_RXADDR;
-					goto out;
-				}
-				g_hash_table_insert(cntx->txaddrs, (gpointer) id, txaddr);
-				g_message("registered gateway %s", id);
-			} else
-				g_message("%s doesn't contain all the required keys", c);
-		}
-	}
-
-	out: return ret;
-}
-
 static void mosq_msg(struct mosquitto *mosq, void *obj,
 		const struct mosquitto_message *message) {
 
@@ -439,14 +384,11 @@ int main(int argc, char** argv) {
 	gchar* mqtthost = "localhost";
 	gint mqttport = 1883;
 	gint listenport = 1912;
-	gchar** configs = NULL;
 	GOptionEntry entries[] = { //
 			{ "mqtthost", 'h', 0, G_OPTION_ARG_STRING, &mqtthost, "", "" }, //
 					{ "mqttport", 'p', 0, G_OPTION_ARG_INT, &mqttport, "", "" }, //
 					{ "listenport", 'l', 0, G_OPTION_ARG_INT, &listenport, "",
 							"" }, //
-					{ "config", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &configs,
-							"", "" }, //
 					{ NULL } };
 
 	GOptionContext* context = g_option_context_new("");
@@ -467,13 +409,6 @@ int main(int argc, char** argv) {
 
 	GInetAddress* loinetaddr = g_inet_address_new_loopback(
 			G_SOCKET_FAMILY_IPV4);
-
-	if (configs != NULL) {
-		JsonParser* jsonparser = json_parser_new_immutable();
-		for (gchar** c = configs; *c != NULL; c++)
-			parseconfig(jsonparser, loinetaddr, &cntx, *c);
-		g_object_unref(jsonparser);
-	}
 
 	cntx.sock = g_socket_new(G_SOCKET_FAMILY_IPV4, G_SOCKET_TYPE_DATAGRAM,
 			G_SOCKET_PROTOCOL_DEFAULT, NULL);
