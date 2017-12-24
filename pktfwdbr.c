@@ -240,11 +240,9 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 		break;
 	case PKT_TYPE_PULL_DATA: {
 		idstr = extractid(pktbuff);
-		GSocketAddress* txaddr = g_hash_table_lookup(cntx->txaddrs, idstr);
-		if (txaddr == NULL) {
-			g_message("don't have a port for %s", idstr);
+		GSocketAddress* txaddr = findport(cntx, idstr);
+		if (txaddr == NULL)
 			goto out;
-		}
 
 		struct pkt_hdr ack = { .version = PKT_VERSION, .token = p->token,
 				.type =
@@ -255,7 +253,13 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 	}
 		break;
 	case PKT_TYPE_TX_ACK: {
+		idstr = extractid(pktbuff);
+		GSocketAddress* txaddr = findport(cntx, idstr);
+		if (txaddr == NULL)
+			goto out;
+		uint8_t* json = PKT_JSON(pktbuff);
 
+		g_message("got tx ack");
 	}
 		break;
 	default:
@@ -419,7 +423,7 @@ static void mosq_msg(struct mosquitto *mosq, void *obj,
 
 	if (g_socket_send_to(cntx->sock, txaddr, (const gchar*) pkt, pktsz,
 	NULL, NULL) < 0)
-		g_message("failed to ack push data");
+		g_message("failed to send pull resp");
 
 }
 
