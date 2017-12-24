@@ -358,6 +358,8 @@ static int parseconfig(JsonParser* jsonparser, GInetAddress* loinetaddr,
 				gint64 port = json_object_get_int_member(gatewayconf,
 				JSON_SERV_PORT_DOWN);
 
+				g_message("downstream port for %s is %d", id, (int) port);
+
 				// we need our own copy of the id string,
 				// the packet forward also lower cases the
 				// id string from the config.
