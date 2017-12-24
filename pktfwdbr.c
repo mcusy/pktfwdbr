@@ -57,6 +57,8 @@ struct publishcontext {
 struct forwarder {
 	const gchar* id;
 	GSocketAddress* addr;
+	guint64 lastseen;
+	guint16 token;
 };
 
 static gchar* createtopic(const gchar* id, ...) {
@@ -183,6 +185,7 @@ static void touchforwarder(struct context* cntx, const gchar* id,
 
 	}
 	forwarder->addr = addr;
+	forwarder->lastseen = g_get_monotonic_time();
 
 }
 
@@ -374,7 +377,7 @@ static void mosq_msg(struct mosquitto *mosq, void *obj,
 	if (forwarder == NULL)
 		return;
 
-	uint16_t token = 0;
+	uint16_t token = forwarder->token++;
 
 	gsize pktsz = sizeof(struct pkt_hdr) + message->payloadlen;
 	uint8_t* pkt = g_malloc(pktsz);
