@@ -183,7 +183,6 @@ static void touchforwarder(struct context* cntx, const gchar* id,
 		forwarder->id = id;
 		g_hash_table_insert(cntx->forwarders, (gpointer) id, forwarder);
 		subforgw(cntx, id);
-
 	}
 
 	if (downstream)
