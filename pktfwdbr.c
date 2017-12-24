@@ -179,6 +179,7 @@ static void touchforwarder(struct context* cntx, const gchar* id,
 		GSocketAddress* addr, gboolean downstream) {
 	struct forwarder* forwarder = g_hash_table_lookup(cntx->forwarders, id);
 	if (forwarder == NULL) {
+		id = g_strdup(id);
 		forwarder = g_malloc(sizeof(*forwarder));
 		forwarder->id = id;
 		g_hash_table_insert(cntx->forwarders, (gpointer) id, forwarder);
