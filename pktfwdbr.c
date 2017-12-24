@@ -5,6 +5,7 @@
 #include <mosquitto.h>
 #include <inttypes.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "pkt.h"
 
@@ -71,9 +72,9 @@ static gchar* createtopic(const gchar* id, ...) {
 	return topic;
 }
 
-static gchar* extracteui(guchar* buffer){
+static gchar* extracteui(guchar* buffer) {
 	GString* tmp = g_string_new(NULL);
-	for(int i = 7; i >= 0; i--){
+	for (int i = 7; i >= 0; i--) {
 		unsigned b = buffer[i];
 		g_string_append_printf(tmp, "%02x", b);
 		buffer[i];
@@ -121,11 +122,12 @@ static void handlerx_processrx(JsonArray *array, guint index,
 	g_free(payload);
 
 	struct publishcontext* cntx = (struct publishcontext*) data;
-	gchar* topic = createtopic(cntx->id, TOPIC_RX, subtopic, subsubtopic, subsubsubtopic, NULL);
+	gchar* topic = createtopic(cntx->id, TOPIC_RX, subtopic, subsubtopic,
+			subsubsubtopic, NULL);
 
-	if(subsubtopic != NULL)
+	if (subsubtopic != NULL)
 		g_free(subsubtopic);
-	if(subsubsubtopic != NULL)
+	if (subsubsubtopic != NULL)
 		g_free(subsubsubtopic);
 
 	JsonGenerator* jsongenerator = json_generator_new();
@@ -135,7 +137,8 @@ static void handlerx_processrx(JsonArray *array, guint index,
 			&publishpayloadsz);
 	g_object_unref(jsongenerator);
 
-	mosquitto_publish(cntx->mosq, NULL, topic, publishpayloadsz, publishpayload, 0, false);
+	mosquitto_publish(cntx->mosq, NULL, topic, publishpayloadsz, publishpayload,
+			0, false);
 
 	g_free(topic);
 	g_free(publishpayload);
@@ -369,6 +372,30 @@ static int parseconfig(JsonParser* jsonparser, GInetAddress* loinetaddr,
 	out: return ret;
 }
 
+static void mosq_msg(struct mosquitto *mosq, void *obj,
+		const struct mosquitto_message *message) {
+
+	char** splittopic;
+	int topicparts;
+	mosquitto_sub_topic_tokenise(message->topic, &splittopic, &topicparts);
+
+	char* root = splittopic[0];
+	char* gatewayid = splittopic[1];
+	char* direction = splittopic[2];
+
+	if (strcmp(root, TOPIC_ROOT) != 0) {
+		g_message("bad topic root");
+		return;
+	}
+
+	if (strcmp(direction, TOPIC_TX) != 0) {
+		g_message("unexpected direction");
+		return;
+	}
+
+	g_message("have tx packet");
+}
+
 int main(int argc, char** argv) {
 
 	int ret = 0;
@@ -401,7 +428,8 @@ int main(int argc, char** argv) {
 	g_message("using mqtt broker at %s on port %d", mqtthost, mqttport);
 	cntx.mqtthost = mqtthost;
 	cntx.mqttport = mqttport;
-	cntx.mosq = mosquitto_new(NULL, true, NULL);
+	cntx.mosq = mosquitto_new(NULL, true, &cntx);
+	mosquitto_message_callback_set(cntx.mosq, mosq_msg);
 	mosquitto_log_callback_set(cntx.mosq, mosq_log);
 
 	GInetAddress* loinetaddr = g_inet_address_new_loopback(
