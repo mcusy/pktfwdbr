@@ -152,6 +152,13 @@ static gchar* extractid(uint8_t* pktbuff) {
 	return g_string_free(str, FALSE);
 }
 
+static GSocketAddress* findport(struct context* cntx, const gchar* id) {
+	GSocketAddress* txaddr = g_hash_table_lookup(cntx->txaddrs, id);
+	if (txaddr == NULL)
+		g_message("don't have a port for %s", id);
+	return txaddr;
+}
+
 static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 		gpointer data) {
 
@@ -183,11 +190,9 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 	switch (p->type) {
 	case PKT_TYPE_PUSH_DATA: {
 		idstr = extractid(pktbuff);
-		GSocketAddress* txaddr = g_hash_table_lookup(cntx->txaddrs, idstr);
-		if (txaddr == NULL) {
-			g_message("don't have a port for %s", idstr);
+		GSocketAddress* txaddr = findport(cntx, idstr);
+		if (txaddr == NULL)
 			goto out;
-		}
 
 		struct pkt_hdr ack = { .version = PKT_VERSION, .token = p->token,
 				.type =
@@ -375,6 +380,8 @@ static int parseconfig(JsonParser* jsonparser, GInetAddress* loinetaddr,
 static void mosq_msg(struct mosquitto *mosq, void *obj,
 		const struct mosquitto_message *message) {
 
+	struct context* cntx = obj;
+
 	char** splittopic;
 	int topicparts;
 	mosquitto_sub_topic_tokenise(message->topic, &splittopic, &topicparts);
@@ -394,6 +401,26 @@ static void mosq_msg(struct mosquitto *mosq, void *obj,
 	}
 
 	g_message("have tx packet");
+
+	GSocketAddress* txaddr = findport(cntx, gatewayid);
+	if (txaddr == NULL)
+		return;
+
+	uint16_t token = 0;
+
+	gsize pktsz = sizeof(struct pkt_hdr) + message->payloadlen;
+	uint8_t* pkt = g_malloc(pktsz);
+
+	struct pkt_hdr hdr = { .version = PKT_VERSION, .token = token, .type =
+	PKT_TYPE_PULL_RESP };
+
+	memcpy(pkt, &hdr, sizeof(hdr));
+	memcpy(pkt + sizeof(hdr), message->payload, message->payloadlen);
+
+	if (g_socket_send_to(cntx->sock, txaddr, (const gchar*) pkt, pktsz,
+	NULL, NULL) < 0)
+		g_message("failed to ack push data");
+
 }
 
 int main(int argc, char** argv) {
