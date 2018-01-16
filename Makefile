@@ -7,7 +7,8 @@ MOSQUITTO = -lmosquitto
 all: pktfwdbr
 
 pktfwdbr: pktfwdbr.c pkt.h
-	$(CC) $(GLIB) $(JSON) $(MOSQUITTO) $(CFLAGS) -o $@ $<
+	$(MAKE) -C mosquittomainloop
+	$(CC) $(GLIB) $(JSON) $(MOSQUITTO) $(CFLAGS) -o $@ $< mosquittomainloop/mosquittomainloop.o
 
 .PHONY: clean
 

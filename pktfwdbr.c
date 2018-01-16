@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "pkt.h"
+#include "mosquittomainloop/mosquittomainloop.h"
 
 #define ERR_MQTTCONNECT 0
 #define ERR_MQTTSUB 1
@@ -42,11 +43,7 @@
 struct context {
 	GSocket* sock;
 	GHashTable* forwarders;
-	struct mosquitto* mosq;
-	const gchar* mqtthost;
-	gint mqttport;
-	GIOChannel* mosqchan;
-	guint mosqsource;
+	struct mosquitto_context mosq;
 };
 
 struct publishcontext {
@@ -169,7 +166,8 @@ static struct forwarder* findforwarder(struct context* cntx, const gchar* id) {
 
 static void subforgw(struct context* cntx, const gchar* id) {
 	gchar* topic = createtopic(id, TOPIC_TX, NULL);
-	if (mosquitto_subscribe(cntx->mosq, NULL, topic, 0) != MOSQ_ERR_SUCCESS) {
+	if (mosquitto_subscribe(cntx->mosq.mosq, NULL, topic, 0)
+			!= MOSQ_ERR_SUCCESS) {
 		g_message("Failed to subscribe to topic");
 	}
 	g_free(topic);
@@ -213,7 +211,7 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 	gssize pktsz = g_socket_receive_from(cntx->sock, &theiraddr, pktbuff,
 			pktbuffsz, NULL, NULL);
 	if (pktsz == 0 || pktsz < sizeof(struct pkt_hdr)) {
-		g_message("invalid packet size; %d", (int) pktsz);
+		g_message("invalid packet size; %d", (int ) pktsz);
 		goto out;
 	}
 
@@ -263,7 +261,7 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 		if (json_object_has_member(rootobj, JSON_RXPK)) {
 			JsonArray* rxpkts = json_object_get_array_member(rootobj,
 			JSON_RXPK);
-			struct publishcontext pcntx = { idstr, cntx->mosq };
+			struct publishcontext pcntx = { idstr, cntx->mosq.mosq };
 			json_array_foreach_element(rxpkts, handlerx_processrx, &pcntx);
 		} else
 			g_message("no rx packets");
@@ -291,7 +289,7 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 	}
 		break;
 	default:
-		g_message("Unhandled type: %d", (int) p->type);
+		g_message("Unhandled type: %d", (int ) p->type);
 		goto out;
 	}
 
@@ -302,53 +300,6 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 	if (jsonparser != NULL)
 		g_object_unref(jsonparser);
 	return TRUE;
-}
-
-static gboolean handlemosq(GIOChannel *source, GIOCondition condition,
-		gpointer data) {
-	struct mosquitto* mosq = (struct mosquitto*) data;
-	mosquitto_loop_read(mosq, 1);
-	return TRUE;
-}
-
-static gboolean mosq_idle(gpointer data) {
-	struct context* cntx = (struct context*) data;
-
-	bool connected = false;
-
-// This seems like the only way to work out if
-// we ever connected or got disconnected at
-// some point
-	if (mosquitto_loop_misc(cntx->mosq) == MOSQ_ERR_NO_CONN) {
-		if (cntx->mosqchan != NULL) {
-			g_source_remove(cntx->mosqsource);
-			// g_io_channel_shutdown doesn't work :/
-			close(mosquitto_socket(cntx->mosq));
-			cntx->mosqchan = NULL;
-		}
-
-		if (mosquitto_connect(cntx->mosq, cntx->mqtthost, cntx->mqttport, 60)
-				== MOSQ_ERR_SUCCESS) {
-			int mosqfd = mosquitto_socket(cntx->mosq);
-			cntx->mosqchan = g_io_channel_unix_new(mosqfd);
-			cntx->mosqsource = g_io_add_watch(cntx->mosqchan, G_IO_IN,
-					handlemosq, cntx->mosq);
-			g_io_channel_unref(cntx->mosqchan);
-			connected = true;
-		}
-	} else
-		connected = true;
-
-	if (connected) {
-		mosquitto_loop_read(cntx->mosq, 1);
-		mosquitto_loop_write(cntx->mosq, 1);
-	}
-	return TRUE;
-}
-
-static void mosq_log(struct mosquitto* mosq, void* userdata, int level,
-		const char* str) {
-	g_message(str);
 }
 
 static void mosq_msg(struct mosquitto *mosq, void *obj,
@@ -416,11 +367,8 @@ int main(int argc, char** argv) {
 	gint mqttport = 1883;
 	gint listenport = 1912;
 	GOptionEntry entries[] = { //
-			{ "mqtthost", 'h', 0, G_OPTION_ARG_STRING, &mqtthost, "", "" }, //
-					{ "mqttport", 'p', 0, G_OPTION_ARG_INT, &mqttport, "", "" }, //
-					{ "listenport", 'l', 0, G_OPTION_ARG_INT, &listenport, "",
-							"" }, //
-					{ NULL } };
+			MQTTOPTS, { "listenport", 'l', 0, G_OPTION_ARG_INT, &listenport, "",
+					"" }, { NULL } };
 
 	GOptionContext* context = g_option_context_new("");
 	GError* error = NULL;
@@ -430,13 +378,9 @@ int main(int argc, char** argv) {
 		goto out;
 	}
 
-	mosquitto_lib_init();
 	g_message("using mqtt broker at %s on port %d", mqtthost, mqttport);
-	cntx.mqtthost = mqtthost;
-	cntx.mqttport = mqttport;
-	cntx.mosq = mosquitto_new(NULL, true, &cntx);
-	mosquitto_message_callback_set(cntx.mosq, mosq_msg);
-	mosquitto_log_callback_set(cntx.mosq, mosq_log);
+	mosquittomainloop(&cntx.mosq, mqtthost, mqttport, TRUE, NULL, &cntx);
+	mosquitto_message_callback_set(cntx.mosq.mosq, mosq_msg);
 
 	GInetAddress* loinetaddr = g_inet_address_new_loopback(
 			G_SOCKET_FAMILY_IPV4);
@@ -460,8 +404,6 @@ int main(int argc, char** argv) {
 		goto out;
 	}
 
-	g_timeout_add(500, mosq_idle, &cntx);
-
 	int rxfd = g_socket_get_fd(cntx.sock);
 	GIOChannel* rxchan = g_io_channel_unix_new(rxfd);
 	g_io_add_watch(rxchan, G_IO_IN, handlerx, &cntx);
@@ -469,8 +411,5 @@ int main(int argc, char** argv) {
 	GMainLoop* mainloop = g_main_loop_new(NULL, FALSE);
 	g_main_loop_run(mainloop);
 
-	mosquitto_disconnect(cntx.mosq);
-
-	out: mosquitto_lib_cleanup();
-	return ret;
+	out: return ret;
 }
