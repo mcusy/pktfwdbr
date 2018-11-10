@@ -6,9 +6,9 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
+#include <mosquittomainloop.h>
 
 #include "pkt.h"
-#include "mosquittomainloop/mosquittomainloop.h"
 
 #define ERR_MQTTCONNECT 0
 #define ERR_MQTTSUB 1
@@ -43,7 +43,7 @@
 struct context {
 	GSocket* sock;
 	GHashTable* forwarders;
-	struct mosquitto_context mosq;
+	MosquittoClient* mosqclient;
 };
 
 struct publishcontext {
@@ -66,7 +66,7 @@ static gchar* createtopic(const gchar* id, ...) {
 	va_list args;
 	va_start(args, id);
 
-	const gchar* part = va_arg(args, const gchar*);
+	const gchar * part = va_arg(args, const gchar*);
 	for (; part != NULL; part = va_arg(args, const gchar*)) {
 		g_string_append(topicstr, "/");
 		g_string_append(topicstr, part);
@@ -166,8 +166,9 @@ static struct forwarder* findforwarder(struct context* cntx, const gchar* id) {
 
 static void subforgw(struct context* cntx, const gchar* id) {
 	gchar* topic = createtopic(id, TOPIC_TX, NULL);
-	if (mosquitto_subscribe(cntx->mosq.mosq, NULL, topic, 0)
-			!= MOSQ_ERR_SUCCESS) {
+	if (mosquitto_subscribe(
+			mosquitto_client_getmosquittoinstance(cntx->mosqclient), NULL,
+			topic, 0) != MOSQ_ERR_SUCCESS) {
 		g_message("Failed to subscribe to topic");
 	}
 	g_free(topic);
@@ -261,7 +262,8 @@ static gboolean handlerx(GIOChannel *source, GIOCondition condition,
 		if (json_object_has_member(rootobj, JSON_RXPK)) {
 			JsonArray* rxpkts = json_object_get_array_member(rootobj,
 			JSON_RXPK);
-			struct publishcontext pcntx = { idstr, cntx->mosq.mosq };
+			struct publishcontext pcntx = { idstr,
+					mosquitto_client_getmosquittoinstance(cntx->mosqclient) };
 			json_array_foreach_element(rxpkts, handlerx_processrx, &pcntx);
 		} else
 			g_message("no rx packets");
@@ -379,8 +381,11 @@ int main(int argc, char** argv) {
 	}
 
 	g_message("using mqtt broker at %s on port %d", mqtthost, mqttport);
-	mosquittomainloop(&cntx.mosq, mqtthost, mqttport, TRUE, NULL, &cntx);
-	mosquitto_message_callback_set(cntx.mosq.mosq, mosq_msg);
+
+	cntx.mosqclient = mosquitto_client_new_plaintext(NULL, mqtthost, mqttport);
+
+	//mosquittomainloop(&cntx.mosq, mqtthost, mqttport, TRUE, NULL, &cntx);
+	//mosquitto_message_callback_set(cntx.mosq.mosq, mosq_msg);
 
 	GInetAddress* loinetaddr = g_inet_address_new_loopback(
 			G_SOCKET_FAMILY_IPV4);
